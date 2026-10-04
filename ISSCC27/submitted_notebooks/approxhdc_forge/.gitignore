@@ -1,0 +1,7 @@
+data/raw/
+__pycache__/
+*.log
+sim_build/
+results.xml
+*.vcd
+flow/
