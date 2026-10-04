@@ -104,6 +104,43 @@ def _get(m, key):
     return None if v is None or (isinstance(v, float) and np.isnan(v)) else v
 
 
+def _nix_python_home(yosys_path):
+    """Find the Nix Python installation that a (possibly wrapped) Nix yosys embeds.
+
+    Returns (PYTHONHOME or None, notes). Tries, in order: ldd on the yosys ELF (following a
+    shell launcher script to the binary it execs), then the Python version encoded in the
+    Nix store path (e.g. ...-python3-3.13.9-env) matched against /nix/store/*-python3-<ver>.
+    """
+    import glob
+    import re
+    notes, elf = [f"yosys={yosys_path}"], yosys_path
+    with open(yosys_path, "rb") as fh:
+        is_script = fh.read(2) == b"#!"
+    if is_script:
+        text = open(yosys_path, errors="replace").read()
+        cands = [c for c in re.findall(r"/nix/store/[^\s\"']+", text)
+                 if os.path.isfile(c) and open(c, "rb").read(4) == b"\x7fELF"]
+        notes.append(f"launcher script -> {cands[-1] if cands else 'no ELF found'}")
+        elf = cands[-1] if cands else None
+    if elf:
+        try:
+            ldd = subprocess.run(["ldd", elf], capture_output=True, text=True).stdout
+        except FileNotFoundError:
+            ldd = ""
+        m = re.search(r"=>\s*(/nix/store/[^ ]+?)/lib/libpython3[^ ]*", ldd)
+        notes.append(f"ldd libpython: {m.group(0) if m else 'none'}")
+        if m and glob.glob(os.path.join(m.group(1), "lib", "python3.*", "os.py")):
+            return m.group(1), notes
+    v = re.search(r"python3-(\d+\.\d+\.\d+)", yosys_path + " " + (elf or ""))
+    if v:
+        homes = [h for h in glob.glob(f"/nix/store/*-python3-{v.group(1)}")
+                 if glob.glob(os.path.join(h, "lib", "python3.*", "os.py"))]
+        notes.append(f"store match python3-{v.group(1)}: {homes[:1] or 'none'}")
+        if homes:
+            return homes[0], notes
+    return None, notes
+
+
 def _native_yosys_wrapper():
     """Native mode (Colab + Nix tools): make Yosys's embedded Python consistent.
 
@@ -114,21 +151,12 @@ def _native_yosys_wrapper():
     Nix Python that Yosys belongs to and adds a private folder holding `click`, then
     probes it once. Returns the wrapper directory.
     """
-    import glob
-    import re
     import shutil
     wrap_dir = FLOW_DIR / ".native_bin"
     wrapper = wrap_dir / "yosys"
     real = os.path.realpath(shutil.which("yosys"))
-    lines = ["#!/bin/bash"]
-    env_root = os.path.dirname(os.path.dirname(real))       # .../yosys-...-python3-env
-    if glob.glob(os.path.join(env_root, "lib", "python3.*", "os.py")):
-        lines.append(f'export PYTHONHOME="{env_root}"')
-    else:
-        ldd = subprocess.run(["ldd", real], capture_output=True, text=True).stdout
-        m = re.search(r"(/nix/store/[^ ]+?)/lib/libpython3", ldd)
-        if m:
-            lines.append(f'export PYTHONHOME="{m.group(1)}"')
+    home, notes = _nix_python_home(real)
+    lines = ["#!/bin/bash"] + ([f'export PYTHONHOME="{home}"'] if home else [])
     deps = FLOW_DIR / ".pyosys_deps"
     if not (deps / "click").exists():
         subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--target", str(deps),
@@ -142,6 +170,7 @@ def _native_yosys_wrapper():
     out = subprocess.run([str(wrapper), "-q", "-y", str(probe)], capture_output=True, text=True,
                          env={**os.environ, "PYTHONPATH": ""})
     print("native yosys wrapper:", " | ".join(lines[1:-1]))
+    print("  python-home detection:", "; ".join(notes))
     print((out.stdout + out.stderr).strip()[-2000:])
     return wrap_dir
 
