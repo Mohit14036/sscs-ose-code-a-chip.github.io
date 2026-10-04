@@ -114,13 +114,11 @@ def _native_yosys_wrapper():
     Nix Python that Yosys belongs to and adds a private folder holding `click`, then
     probes it once. Returns the wrapper directory.
     """
+    import glob
     import re
     import shutil
     wrap_dir = FLOW_DIR / ".native_bin"
     wrapper = wrap_dir / "yosys"
-    if wrapper.exists():
-        return wrap_dir
-    import glob
     real = os.path.realpath(shutil.which("yosys"))
     lines = ["#!/bin/bash"]
     env_root = os.path.dirname(os.path.dirname(real))       # .../yosys-...-python3-env
@@ -132,8 +130,9 @@ def _native_yosys_wrapper():
         if m:
             lines.append(f'export PYTHONHOME="{m.group(1)}"')
     deps = FLOW_DIR / ".pyosys_deps"
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--target", str(deps), "click>=8,<8.3"],
-                   check=True)
+    if not (deps / "click").exists():
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--target", str(deps),
+                        "click>=8,<8.3"], check=True)
     lines += [f'export PYTHONPATH="{deps}${{PYTHONPATH:+:$PYTHONPATH}}"', f'exec "{real}" "$@"']
     wrap_dir.mkdir(parents=True, exist_ok=True)
     wrapper.write_text("\n".join(lines) + "\n")
@@ -150,7 +149,9 @@ def _native_yosys_wrapper():
 def _flow_env():
     env = dict(os.environ)
     if NATIVE:
-        env["PATH"] = f"{_native_yosys_wrapper()}{os.pathsep}{env['PATH']}"
+        wrapper = _native_yosys_wrapper() / "yosys"
+        env["_LLN_OVERRIDE_YOSYS"] = str(wrapper)   # LibreLane's own hook for the yosys binary
+        print(f"native mode: LibreLane will use {wrapper}")
     return env
 
 
