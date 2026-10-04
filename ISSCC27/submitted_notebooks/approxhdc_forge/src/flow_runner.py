@@ -104,6 +104,21 @@ def _get(m, key):
     return None if v is None or (isinstance(v, float) and np.isnan(v)) else v
 
 
+def _flow_env():
+    """Environment for the librelane subprocess.
+
+    Native mode (Colab + Nix tools): Yosys's embedded Python only sees PYTHONPATH plus
+    LibreLane's script dir, so LibreLane's pip-installed dependencies (click, ...) are
+    invisible to it. Add the site-packages directory that holds them.
+    """
+    env = dict(os.environ)
+    if NATIVE:
+        import click
+        site = os.path.dirname(os.path.dirname(click.__file__))
+        env["PYTHONPATH"] = os.pathsep.join(p for p in (site, env.get("PYTHONPATH", "")) if p)
+    return env
+
+
 def run(cfg, clock_ns=20.0, overrides=None, threads=4, render=False, tag="run", mode="fast"):
     """Run the flow for one design point (mode 'fast' or 'full'); returns the CSV row."""
     overrides = {**(FAST if mode == "fast" else {}), **(overrides or {})}
@@ -115,7 +130,7 @@ def run(cfg, clock_ns=20.0, overrides=None, threads=4, render=False, tag="run", 
             ["librelane", *([] if NATIVE else ["--docker-no-tty", "--dockerized"]),
              "--run-tag", tag, "--overwrite",
              "--hide-progress-bar", "-j", str(threads), *skip, "config.json"],
-            cwd=d, stdout=log, stderr=subprocess.STDOUT)
+            cwd=d, env=_flow_env(), stdout=log, stderr=subprocess.STDOUT)
     row = collect(cfg, clock_ns, d, tag, mode, time.time() - t0, proc.returncode)
     append_row(row)
     gds = ROOT / row["gds"] if row["gds"] else None
