@@ -104,18 +104,53 @@ def _get(m, key):
     return None if v is None or (isinstance(v, float) and np.isnan(v)) else v
 
 
-def _flow_env():
-    """Environment for the librelane subprocess.
+def _native_yosys_wrapper():
+    """Native mode (Colab + Nix tools): make Yosys's embedded Python consistent.
 
-    Native mode (Colab + Nix tools): Yosys's embedded Python only sees PYTHONPATH plus
-    LibreLane's script dir, so LibreLane's pip-installed dependencies (click, ...) are
-    invisible to it. Add the site-packages directory that holds them.
+    LibreLane's Yosys steps run Python scripts inside Yosys's embedded interpreter. In
+    Colab that interpreter came up with the system prefix (/usr), loading a foreign
+    standard library ("No module named '_opcode'") without `click`, the only third-party
+    module those scripts need. This writes a `yosys` wrapper that pins PYTHONHOME to the
+    Nix Python that Yosys belongs to and adds a private folder holding `click`, then
+    probes it once. Returns the wrapper directory.
     """
+    import re
+    import shutil
+    wrap_dir = FLOW_DIR / ".native_bin"
+    wrapper = wrap_dir / "yosys"
+    if wrapper.exists():
+        return wrap_dir
+    import glob
+    real = os.path.realpath(shutil.which("yosys"))
+    lines = ["#!/bin/bash"]
+    env_root = os.path.dirname(os.path.dirname(real))       # .../yosys-...-python3-env
+    if glob.glob(os.path.join(env_root, "lib", "python3.*", "os.py")):
+        lines.append(f'export PYTHONHOME="{env_root}"')
+    else:
+        ldd = subprocess.run(["ldd", real], capture_output=True, text=True).stdout
+        m = re.search(r"(/nix/store/[^ ]+?)/lib/libpython3", ldd)
+        if m:
+            lines.append(f'export PYTHONHOME="{m.group(1)}"')
+    deps = FLOW_DIR / ".pyosys_deps"
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--target", str(deps), "click>=8,<8.3"],
+                   check=True)
+    lines += [f'export PYTHONPATH="{deps}${{PYTHONPATH:+:$PYTHONPATH}}"', f'exec "{real}" "$@"']
+    wrap_dir.mkdir(parents=True, exist_ok=True)
+    wrapper.write_text("\n".join(lines) + "\n")
+    wrapper.chmod(0o755)
+    probe = wrap_dir / "probe.py"
+    probe.write_text("import sys, click\nprint('yosys python', sys.version.split()[0], sys.prefix, 'click', click.__version__)\n")
+    out = subprocess.run([str(wrapper), "-q", "-y", str(probe)], capture_output=True, text=True,
+                         env={**os.environ, "PYTHONPATH": ""})
+    print("native yosys wrapper:", " | ".join(lines[1:-1]))
+    print((out.stdout + out.stderr).strip()[-2000:])
+    return wrap_dir
+
+
+def _flow_env():
     env = dict(os.environ)
     if NATIVE:
-        import click
-        site = os.path.dirname(os.path.dirname(click.__file__))
-        env["PYTHONPATH"] = os.pathsep.join(p for p in (site, env.get("PYTHONPATH", "")) if p)
+        env["PATH"] = f"{_native_yosys_wrapper()}{os.pathsep}{env['PATH']}"
     return env
 
 
@@ -135,7 +170,10 @@ def run(cfg, clock_ns=20.0, overrides=None, threads=4, render=False, tag="run", 
     append_row(row)
     gds = ROOT / row["gds"] if row["gds"] else None
     if render and gds:
-        render_gds(gds, FIGS / f"layout_{cfg.name}.png")
+        try:
+            render_gds(gds, FIGS / f"layout_{cfg.name}.png")
+        except (subprocess.CalledProcessError, FileNotFoundError, StopIteration) as e:
+            print(f"layout render failed (flow results are unaffected): {e}")
     return row
 
 
