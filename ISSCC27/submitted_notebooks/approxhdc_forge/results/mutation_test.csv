@@ -1,0 +1,6 @@
+mutant,tests,failed,expected,result
+control (unmodified),5,0,pass,OK
+binarize ignores the tie vector,5,5,fail,OK
+counter saturation off by one,5,2,fail,OK
+stochastic-update mask ignored,5,2,fail,OK
+argmin ties go to the highest class,5,4,fail,OK

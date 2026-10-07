@@ -62,6 +62,7 @@ def run_one(cfg, sim, n, waves=False, testcase=None, chip=False):
     build_args = ["-Wno-fatal", "-Wno-lint", "-Wno-style", "-O3"] if sim == "verilator" else []
     t0 = time.time()
     runner.build(sources=[vfile], hdl_toplevel=top, build_dir=bdir, build_args=build_args,
+                 timescale=("1ns", "1ps"),   # the generated RTL has no `timescale; Icarus would default to 1 s
                  waves=waves, always=True)
     env = {"HDC_CFG": json.dumps(asdict(cfg)), **{k: str(v) for k, v in n.items()},
            "PYTHONPATH": os.pathsep.join([str(ROOT / "src"), str(ROOT / "tb")])}

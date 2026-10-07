@@ -263,26 +263,31 @@ import pya
 lv = pya.LayoutView()
 lv.load_layout(gds, True)
 lv.load_layer_props(lyp)
-KEEP = {(67, 20), (68, 20), (69, 20), (70, 20), (71, 20), (72, 20)}   # li1, met1..met5
-it = lv.begin_layers()
-while not it.at_end():
-    lp = it.current().dup()
-    lp.visible = (lp.source_layer, lp.source_datatype) in KEEP
-    lv.set_layer_properties(it, lp)
-    it.next()
+if box:    # zoom into a window (um): show every layer so the standard cells are visible
+    x0, y0, x1, y1 = [float(v) for v in box.split(",")]
+    lv.max_hier()
+    lv.zoom_box(pya.DBox(x0, y0, x1, y1))
+else:      # full chip: metal layers only (li1, met1..met5)
+    KEEP = {(67, 20), (68, 20), (69, 20), (70, 20), (71, 20), (72, 20)}
+    it = lv.begin_layers()
+    while not it.at_end():
+        lp = it.current().dup()
+        lp.visible = (lp.source_layer, lp.source_datatype) in KEEP
+        lv.set_layer_properties(it, lp)
+        it.next()
+    lv.max_hier()
+    lv.zoom_fit()
 lv.set_config("background-color", "#ffffff")
 lv.set_config("grid-visible", "false")
-lv.max_hier()
-lv.zoom_fit()
 lv.save_image(out, 1800, 1800)
 """
 
 
-def render_gds(gds, png):
+def render_gds(gds, png, box=None):
     """Render a GDS to PNG with KLayout (inside the LibreLane image) and the sky130A colors."""
     png.parent.mkdir(parents=True, exist_ok=True)
     lyp = next(PDK_ROOT.glob("**/sky130A/libs.tech/klayout/tech/sky130A.lyp"))
-    script = png.parent / ".render_gds.py"
+    script = png.parent / f".render_{png.stem}.py"
     script.write_text(RENDER_PY)
     cmd = []
     if not NATIVE:
@@ -291,7 +296,7 @@ def render_gds(gds, png):
             cmd += ["-v", f"{mnt}:{mnt}"]
         cmd += [IMAGE]
     cmd += ["klayout", "-zz", "-r", str(script), "-rd", f"gds={gds}", "-rd", f"lyp={lyp}",
-            "-rd", f"out={png}"]
+            "-rd", f"out={png}", "-rd", f"box={box or ''}"]
     subprocess.run(cmd, check=True, capture_output=True)
     return png
 

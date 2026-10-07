@@ -137,8 +137,10 @@ SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a
 
 
 def _style():
+    import sys
     import matplotlib
-    matplotlib.use("Agg")
+    if "ipykernel" not in sys.modules:      # headless scripts: Agg; inside Jupyter keep the inline backend
+        matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     plt.rcParams.update({
         "figure.facecolor": SURF, "axes.facecolor": SURF, "savefig.facecolor": SURF,
