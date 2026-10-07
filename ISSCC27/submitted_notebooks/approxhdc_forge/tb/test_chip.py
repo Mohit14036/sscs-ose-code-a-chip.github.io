@@ -3,6 +3,7 @@ deliver ring words intact, and the chip must classify / learn exactly like the m
 Uses the same HDC_CFG environment variable as test_hdc.py.
 """
 import math
+import os
 
 import cocotb
 import numpy as np
@@ -15,7 +16,7 @@ IOW = 32
 
 
 async def reset(dut):
-    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
+    cocotb.start_soon(Clock(dut.clk, int(os.environ.get("HDC_CLK_NS", 10)), unit="ns").start())
     for s in (dut.start, dut.learn, dut.upd_err, dut.label, dut.feat_we, dut.feat_addr,
               dut.feat_data, dut.ld_shift, dut.ld_data, dut.load_we):
         s.value = 0

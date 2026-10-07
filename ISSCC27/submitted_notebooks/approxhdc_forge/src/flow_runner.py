@@ -70,6 +70,8 @@ METRICS = {   # csv column: LibreLane final metrics key
     "setup_ws_ss_ns": "timing__setup__ws__corner:nom_ss_100C_1v60",
     "setup_ws_ns": "timing__setup__ws",
     "setup_tns_ns": "timing__setup__tns",
+    "setup_vio_count": "timing__setup_vio__count",
+    "hold_vio_count": "timing__hold_vio__count",
     "hold_ws_ns": "timing__hold__ws",
     "power_total_w": "power__total",
     "power_internal_w": "power__internal__total",
@@ -211,8 +213,12 @@ def collect(cfg, clock_ns, d, tag, mode, runtime, returncode=0):
     """Build the CSV row from a finished run directory."""
     mpath = d / "runs" / tag / "final" / "metrics.json"
     m = json.loads(mpath.read_text()) if mpath.exists() else {}
+    gds = d / "runs" / tag / "final" / "gds" / "hdc_chip.gds"
+    # flow_ok = the flow produced a GDS and metrics. LibreLane can still exit non-zero after
+    # that (e.g. its hold checker always inspects every corner), which flow_rc records.
     row = {**asdict(cfg), "clock_ns": clock_ns, "mode": mode,
-           "flow_ok": int(returncode == 0 and bool(m)), "runtime_s": round(runtime),
+           "flow_ok": int(bool(m) and gds.exists()), "flow_rc": returncode,
+           "runtime_s": round(runtime),
            **{k: _get(m, v) for k, v in METRICS.items()}}
     for corner in ("tt", "ss"):
         ws = row[f"setup_ws_{corner}_ns"]
@@ -220,9 +226,26 @@ def collect(cfg, clock_ns, d, tag, mode, runtime, returncode=0):
     row["power_mode"] = "vectorless"
     checks = ("klayout_drc", "lvs_errors", "route_drc") + (("magic_drc",) if mode == "full" else ())
     row["signoff_clean"] = int(row["flow_ok"] and all(row[c] == 0 for c in checks))
-    gds = d / "runs" / tag / "final" / "gds" / "hdc_chip.gds"
     row["gds"] = str(gds.relative_to(ROOT)) if gds.exists() else ""
     return row
+
+
+def refresh_csv():
+    """Rebuild flow_runs.csv from the run folders (current metric mapping), keeping each
+    row's recorded mode, runtime and exit status. Run only when no batch is writing."""
+    with CSV_PATH.open() as fh:
+        old = list(csv.DictReader(fh))
+    rows = []
+    for r in old:
+        cfg = RTLConfig(**{f: type(v)(r[f]) for f, v in asdict(RTLConfig()).items()})
+        clock = float(r["clock_ns"])
+        rc = int(r.get("flow_rc") or (0 if r["flow_ok"] == "1" else 1))
+        rows.append(collect(cfg, clock, design_dir(cfg, clock), "run", r["mode"],
+                            float(r["runtime_s"]), rc))
+    CSV_PATH.rename(CSV_PATH.with_suffix(".csv.bak"))
+    for row in rows:
+        append_row(row)
+    print(f"rebuilt {len(rows)} rows ({sum(r['flow_ok'] for r in rows)} flow_ok)")
 
 
 def append_row(row):
@@ -326,7 +349,8 @@ def batch(n_lhs, jobs, threads, clock_ns=20.0):
     for cfg in pair_points() + lhs_points(n_lhs):
         if key(cfg, clock_ns) not in seen and cfg not in todo:
             todo.append(cfg)
-    todo.sort(key=lambda c: c.D * (c.w if c.learn else 1))   # small designs first
+    # small designs first; P>=128 learning designs (hours in ABC synthesis) go last
+    todo.sort(key=lambda c: (bool(c.learn and c.P >= 128), c.D * (c.w if c.learn else 1)))
     print(f"{len(todo)} flow runs queued ({jobs} in parallel)", flush=True)
     with ThreadPoolExecutor(jobs) as ex:
         for row in ex.map(lambda c: run(c, clock_ns, threads=threads), todo):
@@ -345,9 +369,13 @@ if __name__ == "__main__":
     ap.add_argument("--threads", type=int, default=4)
     ap.add_argument("--render", action="store_true")
     ap.add_argument("--mode", choices=["fast", "full"], default="fast")
+    ap.add_argument("--refresh-csv", action="store_true", help="rebuild CSV from run folders")
     ap.add_argument("--batch", type=int, default=0, help="LHS points (plus fixed off/on pairs)")
     ap.add_argument("--jobs", type=int, default=3)
     a = vars(ap.parse_args())
+    if a["refresh_csv"]:
+        refresh_csv()
+        sys.exit(0)
     if a["batch"]:
         batch(a["batch"], a["jobs"], a["threads"], a["clock"])
         sys.exit(0)
