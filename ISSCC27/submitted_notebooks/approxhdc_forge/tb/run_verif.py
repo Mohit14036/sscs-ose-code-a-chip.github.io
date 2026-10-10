@@ -40,9 +40,16 @@ MATRIX = (
     + [dict(P=32, learn=2, w=4, k=3), dict(P=128, learn=2, w=8, k=0),
        dict(D=256, P=256, learn=2, w=4, k=3), dict(D=256, P=256, learn=0),
        dict(F=33, Q=8, learn=2, w=6, k=2), dict(D=1024, P=64, learn=2, w=8, k=0, seed=5)]
+    # clock-gated ring memory: the three final-chip styles, error-driven with stochastic updates,
+    # and the single-word ring corner (P = D)
+    + [dict(P=32, variant="satcomp", knob=2, learn=1, w=2, k=0, cg=1),
+       dict(P=32, variant="satcomp", knob=2, learn=0, cg=1),
+       dict(P=64, learn=2, w=4, k=3, cg=1),
+       dict(D=256, P=256, learn=2, w=4, k=3, cg=1)]
 )
 CHIP = [dict(P=32, learn=2, w=4, k=3), dict(D=256, learn=0), dict(D=256, P=32, learn=1, w=3, k=0),
-        dict(D=256, P=256, learn=2, w=8, k=0)]
+        dict(D=256, P=256, learn=2, w=8, k=0),
+        dict(P=32, variant="satcomp", knob=2, learn=1, w=2, k=0, cg=1), dict(D=256, P=64, learn=0, cg=1)]
 QUICK = [dict(variant="exact", knob=0, learn=0), dict(learn=2, w=4, k=3),
          dict(D=256, P=256, learn=1, w=4, k=0)]
 VCD_CFGS = [dict(learn=0), dict(learn=2, w=8, k=0), dict(learn=2, w=4, k=3)]

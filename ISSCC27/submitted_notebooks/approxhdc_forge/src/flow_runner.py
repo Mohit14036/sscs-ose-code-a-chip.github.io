@@ -13,6 +13,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
@@ -96,6 +97,9 @@ def prepare(cfg, clock_ns=20.0, overrides=None):
     (d / "src" / "hdc_chip.v").write_text(generate_chip(cfg))
     conf = {"DESIGN_NAME": "hdc_chip", "VERILOG_FILES": ["dir::src/hdc_chip.v"],
             "CLOCK_PERIOD": clock_ns, **FLOW_DEFAULTS, **(overrides or {})}
+    if cfg.cg:   # the clock gate becomes the sky130 integrated clock-gating cell (see rtlgen.CG_MODULE)
+        conf.update({"VERILOG_DEFINES": ["HDC_SYNTH_ICG"], "LINTER_DEFINES": ["HDC_SYNTH_ICG"],
+                     "LINTER_INCLUDE_PDK_MODELS": True, **(overrides or {})})
     (d / "config.json").write_text(json.dumps(conf, indent=2) + "\n")
     (d / "hdc_config.json").write_text(json.dumps(asdict(cfg), indent=2) + "\n")
     return d
@@ -237,7 +241,8 @@ def refresh_csv():
         old = list(csv.DictReader(fh))
     rows = []
     for r in old:
-        cfg = RTLConfig(**{f: type(v)(r[f]) for f, v in asdict(RTLConfig()).items()})
+        cfg = RTLConfig(**{f: (type(v)(r[f]) if r.get(f) not in (None, "") else v)
+                           for f, v in asdict(RTLConfig()).items()})
         clock = float(r["clock_ns"])
         rc = int(r.get("flow_rc") or (0 if r["flow_ok"] == "1" else 1))
         rows.append(collect(cfg, clock, design_dir(cfg, clock), "run", r["mode"],
@@ -248,14 +253,32 @@ def refresh_csv():
     print(f"rebuilt {len(rows)} rows ({sum(r['flow_ok'] for r in rows)} flow_ok)")
 
 
+_CSV_LOCK = threading.Lock()
+
+
 def append_row(row):
-    CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
-    new = not CSV_PATH.exists()
-    with CSV_PATH.open("a", newline="") as fh:
-        wr = csv.DictWriter(fh, fieldnames=list(row))
-        if new:
-            wr.writeheader()
-        wr.writerow(row)
+    """Append one result row; if the row has columns the file lacks (the schema grew, for example
+    the `cg` column), rewrite the file with the union of columns first (old rows get '')."""
+    with _CSV_LOCK:
+        CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if not CSV_PATH.exists():
+            with CSV_PATH.open("w", newline="") as fh:
+                wr = csv.DictWriter(fh, fieldnames=list(row))
+                wr.writeheader()
+                wr.writerow(row)
+            return
+        with CSV_PATH.open(newline="") as fh:
+            rd = csv.DictReader(fh)
+            cols, old = list(rd.fieldnames or []), list(rd)
+        extra = [c for c in row if c not in cols]
+        if extra:
+            cols += extra
+            with CSV_PATH.open("w", newline="") as fh:
+                wr = csv.DictWriter(fh, fieldnames=cols, restval="")
+                wr.writeheader()
+                wr.writerows(old)
+        with CSV_PATH.open("a", newline="") as fh:
+            csv.DictWriter(fh, fieldnames=cols, restval="").writerow(row)
 
 
 RENDER_PY = """
@@ -340,12 +363,12 @@ def done_keys():
     if not CSV_PATH.exists():
         return set()
     with CSV_PATH.open() as fh:
-        return {(r["D"], r["P"], r["variant"], r["knob"], r["learn"], r["w"], r["k"], r["clock_ns"])
-                for r in csv.DictReader(fh) if r["flow_ok"] == "1"}
+        return {(r["D"], r["P"], r["variant"], r["knob"], r["learn"], r["w"], r["k"], r.get("cg") or "0",
+                 r["clock_ns"]) for r in csv.DictReader(fh) if r["flow_ok"] == "1"}
 
 
 def key(cfg, clock_ns):
-    return tuple(str(x) for x in (cfg.D, cfg.P, cfg.variant, cfg.knob, cfg.learn, cfg.w, cfg.k,
+    return tuple(str(x) for x in (cfg.D, cfg.P, cfg.variant, cfg.knob, cfg.learn, cfg.w, cfg.k, cfg.cg,
                                   float(clock_ns)))
 
 
